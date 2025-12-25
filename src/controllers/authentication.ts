@@ -1,79 +1,47 @@
 import express from "express";
-import { getUserByEmail, createUser } from "../db/users";
-import { random, authentication } from "../helpers";
+import * as authService from "../services/auth.service";
+import * as userService from "../services/user.service";
+import logger from "../utils/logger";
 
+// Register a new user
 export const register = async (req: express.Request, res: express.Response) => {
   try {
     const { email, password, username } = req.body;
 
-    if (!email || !password || !username) {
-      console.warn("Email/Password/Username is required");
-      return res
-        .status(400)
-        .json({ message: "Email/Password/Username is required" });
+    try {
+      const user = await authService.registerUser(email, username, password);
+      return res.status(201).json(user);
+    } catch (err: any) {
+      if (err.message === "UserExists")
+        return res.status(409).json({ message: "User already exists" });
+      throw err;
     }
-
-    const existingUser = await getUserByEmail(email);
-
-    if (existingUser) {
-      return res.status(400).json({ message: "already user is existing" });
-    }
-
-    const salt = random();
-    const user = await createUser({
-      email,
-      username,
-      authentication: {
-        salt,
-        password: authentication(salt, password),
-      },
-    });
-
-    return res.status(200).json(user).end();
   } catch (error) {
-    console.error("Register >> Error", error);
-    return res.status(500).json({ message: "Unabole to getister" });
+    logger.error({ err: error }, "Register >> Error");
+    return res.status(500).json({ message: "Unable to register user" });
   }
 };
 
+// Login and issue a session cookie
 export const login = async (req: express.Request, res: express.Response) => {
   try {
     const { email, password } = req.body;
 
-    if (!email || !password) {
-      return res.sendStatus(400);
+    const user = await authService.authenticateUser(email, password);
+    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+
+    // session token is set by the service on the DB record; retrieve it
+    const fresh = (await userService.findByEmail(email));
+
+    const token = fresh?.authentication?.sessionToken;
+
+    if (token) {
+      res.cookie("ANTONIO-AUTH", token, { httpOnly: true, sameSite: "lax" });
     }
 
-    const user = await getUserByEmail(email).select(
-      "+authentication.salt +authentication.password"
-    );
-
-    if (!user) {
-      return res.sendStatus(400);
-    }
-
-    const expectedHash = authentication(user.authentication.salt, password);
-
-    if (user.authentication.password !== expectedHash) {
-      return res.sendStatus(401);
-    }
-
-    const salt = random();
-    user.authentication.sessionToken = authentication(
-      salt,
-      user._id.toString()
-    );
-
-    await user.save();
-
-    res.cookie("ANTONIO-AUTH", user.authentication.sessionToken, {
-      httpOnly: true,
-      sameSite: "lax",
-    });
-
-    return res.status(200).json(user).end();
+    return res.status(200).json(user);
   } catch (error) {
-    console.log(error);
-    return res.sendStatus(400);
+    logger.error({ err: error }, "Login error");
+    return res.status(500).json({ message: "Unable to login" });
   }
 };
